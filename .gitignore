@@ -1,0 +1,46 @@
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Go build output
+*.test
+*.out
+*.a
+
+# Output of `go build`, `go install`, or custom build dirs
+/bin/
+/build/
+/dist/
+/out/
+
+# Coverage files
+coverage.*
+*.cover
+*.cov
+
+# Go workspaces
+go.work
+go.work.sum
+
+# Dependency directories (if vendoring)
+vendor/
+
+# OS-specific files
+.DS_Store
+Thumbs.db
+
+# Logs and temp files
+*.log
+*.tmp
+*.swp
+
+# IDE/editor settings
+.idea/
+.vscode/
+*.iml
+
+# Go module sums can be committed usually, but ignore backup files
+go.sum.backup
