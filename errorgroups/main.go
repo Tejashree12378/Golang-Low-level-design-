@@ -11,7 +11,7 @@ import (
 
 const (
 	timeout    = 500 * time.Millisecond
-	numWorkers = 3
+	numWorkers = 1
 )
 
 func main() {
@@ -41,10 +41,6 @@ func batchProcessor(jobs []job) error {
 	for _, j := range jobs {
 		j := j
 
-		if j.id%8 == 0 {
-			time.Sleep(1 * time.Second)
-		}
-
 		if ctx.Err() != nil {
 			break
 		}
@@ -54,15 +50,17 @@ func batchProcessor(jobs []job) error {
 				return ctx.Err()
 			}
 
+			if j.id%3 == 0 {
+				time.Sleep(1 * time.Second)
+			}
+
 			req, err := http.NewRequestWithContext(ctx, "GET", j.url, nil)
 			if err != nil {
-				fmt.Println(j.id, err)
 				return err
 			}
 
 			resp, err := http.DefaultClient.Do(req)
 			if err != nil {
-				fmt.Println(j.id, err)
 				return err
 			}
 
@@ -74,11 +72,9 @@ func batchProcessor(jobs []job) error {
 	}
 
 	eg.Go(func() error {
-		<-ctx.Done()
 		return ctx.Err()
 	})
 
-	fmt.Println("has context error", ctx.Err() != nil)
 	if err := eg.Wait(); err != nil {
 		fmt.Println("failed to process this batch", err.Error())
 		return err
