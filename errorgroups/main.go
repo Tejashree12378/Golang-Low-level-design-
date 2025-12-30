@@ -10,8 +10,8 @@ import (
 )
 
 const (
-	timeout    = 500 * time.Millisecond
-	numWorkers = 1
+	timeout    = 1 * time.Second
+	numWorkers = 3
 )
 
 func main() {
@@ -20,7 +20,7 @@ func main() {
 		jobs[i-1] = job{i, "https://www.google.com/"}
 	}
 
-	//jobs[3].url = "fksnef.com"
+	//jobs[5].url = "fksnef.com"
 	//jobs[4].url = "https://httpbin.org/delay/5"
 
 	batchProcessor(jobs)
@@ -36,40 +36,25 @@ func batchProcessor(jobs []job) error {
 	defer cancel()
 
 	var eg, ctx = errgroup.WithContext(parentCtx)
-	eg.SetLimit(numWorkers)
 
-	for _, j := range jobs {
-		j := j
+	tasks := make(chan job)
 
-		if ctx.Err() != nil {
-			break
-		}
-
+	for range numWorkers {
 		eg.Go(func() error {
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
-
-			if j.id%3 == 0 {
-				time.Sleep(1 * time.Second)
-			}
-
-			req, err := http.NewRequestWithContext(ctx, "GET", j.url, nil)
-			if err != nil {
-				return err
-			}
-
-			resp, err := http.DefaultClient.Do(req)
-			if err != nil {
-				return err
-			}
-
-			defer resp.Body.Close()
-			fmt.Println(j.id, resp.StatusCode)
-
-			return nil
+			return worker(ctx, tasks)
 		})
 	}
+
+	go func() {
+		defer close(tasks)
+		for i := range jobs {
+			select {
+			case <-ctx.Done():
+				return
+			case tasks <- jobs[i]:
+			}
+		}
+	}()
 
 	eg.Go(func() error {
 		return ctx.Err()
@@ -78,6 +63,38 @@ func batchProcessor(jobs []job) error {
 	if err := eg.Wait(); err != nil {
 		fmt.Println("failed to process this batch", err.Error())
 		return err
+	}
+
+	fmt.Println("Batch Processed Successfully")
+	return nil
+}
+
+func worker(ctx context.Context, jobs <-chan job) error {
+	for j := range jobs {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+
+		if j.id%9 == 0 {
+			time.Sleep(1 * time.Second)
+		}
+
+		req, err := http.NewRequestWithContext(ctx, "GET", j.url, nil)
+		if err != nil {
+			return err
+		}
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return err
+		}
+
+		//if j.id%9 == 0 {
+		//	time.Sleep(2 * time.Second)
+		//}
+
+		defer resp.Body.Close()
+		fmt.Println(j.id, resp.StatusCode)
 	}
 
 	return nil
