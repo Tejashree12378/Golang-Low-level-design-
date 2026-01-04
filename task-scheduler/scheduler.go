@@ -116,12 +116,11 @@ func (tq *taskQueue) Dequeue() (task TaskFunc, isCanceled, queueClosed bool) {
 
 		if wait <= 0 {
 			t := heap.Pop(tq.minHeap).(node)
+			fmt.Println("dequeued task", t.id, time.Now().String())
 			taskCanceled := tq.canceledTasks[t.id]
 			delete(tq.canceledTasks, t.id)
 
 			if taskCanceled {
-				fmt.Println("task is canceled")
-
 				return nil, true, false
 			}
 
@@ -143,14 +142,12 @@ func (tq *taskQueue) Dequeue() (task TaskFunc, isCanceled, queueClosed bool) {
 
 func (tq *taskQueue) ScheduleAt(t time.Time, task TaskFunc) int {
 	taskID := tq.Enqueue(t, task)
-	fmt.Println("task has been scheduled, here is ur task id", taskID)
 	return taskID
 }
 
 func (tq *taskQueue) ScheduleAfter(d time.Duration, task TaskFunc) int {
 	t := time.Now().Add(d)
 	taskID := tq.Enqueue(t, task)
-	fmt.Println("task has been scheduled, here is ur task id", taskID)
 	return taskID
 }
 
@@ -160,7 +157,6 @@ func (tq *taskQueue) Close() {
 	tq.notEmpty.Broadcast()
 	tq.mu.Unlock()
 
-	close(tq.earlyWakeup)
 	tq.wg.Wait()
 }
 
@@ -170,17 +166,14 @@ func (tq *taskQueue) Cancel(taskID int) bool {
 
 	val, ok := tq.canceledTasks[taskID]
 	if !ok {
-		fmt.Println("task with id ", taskID, "does not exist or has already been processed")
 		return false
 	}
 
 	if val {
-		fmt.Println("task with id ", taskID, "has already been canceled")
 		return false
 	}
 
 	tq.canceledTasks[taskID] = true
-	fmt.Println("task canceled")
 	return true
 }
 
