@@ -14,6 +14,7 @@ type node struct {
 	task        TaskFunc
 	scheduledAt time.Time
 	id          int
+	canceled    bool
 }
 
 type taskQueue struct {
@@ -26,6 +27,7 @@ type taskQueue struct {
 	taskTimeOut   time.Duration
 	earlyWakeup   chan int
 	wg            sync.WaitGroup
+	tasks         chan node
 }
 
 type Scheduler interface {
@@ -44,13 +46,13 @@ func NewTaskQueue(numWorkers int, taskTimeout time.Duration) Scheduler {
 		mu:            sync.Mutex{},
 		taskTimeOut:   taskTimeout,
 		canceledTasks: make(map[int]bool),
+		tasks:         make(chan node),
 	}
 
 	tq.notEmpty = sync.NewCond(&tq.mu)
 	tq.earlyWakeup = make(chan int)
 
 	tq.wg = sync.WaitGroup{}
-	tq.wg.Add(numWorkers)
 
 	tq.initProcessors(numWorkers)
 
@@ -58,9 +60,13 @@ func NewTaskQueue(numWorkers int, taskTimeout time.Duration) Scheduler {
 }
 
 func (tq *taskQueue) initProcessors(numWorkers int) {
+	tq.wg.Add(numWorkers)
 	for i := 0; i < numWorkers; i++ {
 		go tq.taskProcessor(&tq.wg)
 	}
+
+	tq.wg.Add(1)
+	go tq.Dequeue()
 }
 
 func (tq *taskQueue) Enqueue(t time.Time, task TaskFunc) int {
@@ -99,36 +105,46 @@ func (tq *taskQueue) Enqueue(t time.Time, task TaskFunc) int {
 }
 
 func (tq *taskQueue) Dequeue() (task TaskFunc, isCanceled, queueClosed bool) {
-	tq.mu.Lock()
-	defer tq.mu.Unlock()
+	defer tq.wg.Done()
 
 	for {
+		tq.mu.Lock()
+
 		for tq.minHeap.Len() == 0 && !tq.isClosed {
 			tq.notEmpty.Wait()
 		}
 
 		if tq.minHeap.Len() == 0 && tq.isClosed {
+			tq.mu.Unlock()
+			close(tq.tasks)
 			return nil, false, true
 		}
 
-		next := (*tq.minHeap)[0]
-		wait := time.Until(next.scheduledAt)
+		var wait time.Duration
+		tasks := make([]node, 0)
 
-		if wait <= 0 {
-			t := heap.Pop(tq.minHeap).(node)
-			fmt.Println("dequeued task", t.id, time.Now().String())
-			taskCanceled := tq.canceledTasks[t.id]
-			delete(tq.canceledTasks, t.id)
+		for tq.minHeap.Len() > 0 {
+			next := (*tq.minHeap)[0]
+			wait = time.Until(next.scheduledAt)
 
-			if taskCanceled {
-				return nil, true, false
+			if wait > 0 {
+				break
 			}
 
-			return t.task, false, false
+			t := heap.Pop(tq.minHeap).(node)
+			fmt.Println("dequeued", t.id)
+			t.canceled = tq.canceledTasks[t.id]
+			tasks = append(tasks, t)
+			delete(tq.canceledTasks, t.id)
+		}
+
+		tq.mu.Unlock()
+
+		for _, t := range tasks {
+			tq.tasks <- t
 		}
 
 		timer := time.NewTimer(wait)
-		tq.mu.Unlock()
 
 		select {
 		case <-timer.C:
@@ -136,7 +152,6 @@ func (tq *taskQueue) Dequeue() (task TaskFunc, isCanceled, queueClosed bool) {
 		}
 
 		timer.Stop()
-		tq.mu.Lock()
 	}
 }
 
@@ -179,20 +194,15 @@ func (tq *taskQueue) Cancel(taskID int) bool {
 
 func (tq *taskQueue) taskProcessor(wg *sync.WaitGroup) {
 	defer wg.Done()
-	for {
-		task, isCanceled, queueClosed := tq.Dequeue()
-		if queueClosed {
-			return
-		}
-
-		if isCanceled || task == nil {
+	for j := range tq.tasks {
+		if j.canceled {
 			continue
 		}
 
 		taskCtx, cancel := context.WithTimeout(context.Background(), tq.taskTimeOut)
 		go func() {
 			defer cancel()
-			task(taskCtx)
+			j.task(taskCtx)
 		}()
 	}
 }
