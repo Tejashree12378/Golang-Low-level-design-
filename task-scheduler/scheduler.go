@@ -14,7 +14,6 @@ type node struct {
 	task        TaskFunc
 	scheduledAt time.Time
 	id          int
-	canceled    bool
 }
 
 type taskQueue struct {
@@ -50,7 +49,7 @@ func NewTaskQueue(numWorkers int, taskTimeout time.Duration) Scheduler {
 	}
 
 	tq.notEmpty = sync.NewCond(&tq.mu)
-	tq.earlyWakeup = make(chan int)
+	tq.earlyWakeup = make(chan int, 1)
 
 	tq.wg = sync.WaitGroup{}
 
@@ -107,6 +106,9 @@ func (tq *taskQueue) Enqueue(t time.Time, task TaskFunc) int {
 func (tq *taskQueue) Dequeue() (task TaskFunc, isCanceled, queueClosed bool) {
 	defer tq.wg.Done()
 
+	timer := time.NewTimer(time.Hour)
+	defer timer.Stop()
+
 	for {
 		tq.mu.Lock()
 
@@ -115,26 +117,42 @@ func (tq *taskQueue) Dequeue() (task TaskFunc, isCanceled, queueClosed bool) {
 		}
 
 		if tq.minHeap.Len() == 0 && tq.isClosed {
-			tq.mu.Unlock()
 			close(tq.tasks)
+			tq.mu.Unlock()
 			return nil, false, true
 		}
 
-		var wait time.Duration
+		next := (*tq.minHeap)[0]
+		wait := time.Until(next.scheduledAt)
 		tasks := make([]node, 0)
 
-		for tq.minHeap.Len() > 0 {
-			next := (*tq.minHeap)[0]
-			wait = time.Until(next.scheduledAt)
-
-			if wait > 0 {
-				break
+		if wait > 0 {
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
 			}
 
+			timer.Reset(wait)
+			tq.mu.Unlock()
+
+			select {
+			case <-timer.C:
+			case <-tq.earlyWakeup:
+			}
+
+			continue
+		}
+
+		now := time.Now()
+		for tq.minHeap.Len() > 0 && !(*tq.minHeap)[0].scheduledAt.After(now) {
 			t := heap.Pop(tq.minHeap).(node)
 			fmt.Println("dequeued", t.id)
-			t.canceled = tq.canceledTasks[t.id]
-			tasks = append(tasks, t)
+
+			if !tq.canceledTasks[t.id] {
+				tasks = append(tasks, t)
+			}
 			delete(tq.canceledTasks, t.id)
 		}
 
@@ -143,15 +161,6 @@ func (tq *taskQueue) Dequeue() (task TaskFunc, isCanceled, queueClosed bool) {
 		for _, t := range tasks {
 			tq.tasks <- t
 		}
-
-		timer := time.NewTimer(wait)
-
-		select {
-		case <-timer.C:
-		case <-tq.earlyWakeup:
-		}
-
-		timer.Stop()
 	}
 }
 
@@ -195,10 +204,6 @@ func (tq *taskQueue) Cancel(taskID int) bool {
 func (tq *taskQueue) taskProcessor(wg *sync.WaitGroup) {
 	defer wg.Done()
 	for j := range tq.tasks {
-		if j.canceled {
-			continue
-		}
-
 		taskCtx, cancel := context.WithTimeout(context.Background(), tq.taskTimeOut)
 		go func() {
 			defer cancel()
