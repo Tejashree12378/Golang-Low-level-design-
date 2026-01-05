@@ -39,7 +39,7 @@ func main() {
 			notFound++
 		}
 	}
-	fmt.Println("Lookup time:", time.Since(start))
+	fmt.Println("total time:", time.Since(start))
 	fmt.Println("notFound:", notFound)
 	fmt.Println("false positives:", N-notFound)
 
