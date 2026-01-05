@@ -14,19 +14,20 @@ type node struct {
 	task        TaskFunc
 	scheduledAt time.Time
 	id          int
+	index       int
 }
 
 type taskQueue struct {
-	minHeap       *MinHeap
-	mu            sync.Mutex
-	notEmpty      *sync.Cond
-	id            int
-	canceledTasks map[int]bool
-	isClosed      bool
-	taskTimeOut   time.Duration
-	earlyWakeup   chan int
-	wg            sync.WaitGroup
-	tasks         chan node
+	minHeap     *MinHeap
+	mu          sync.Mutex
+	notEmpty    *sync.Cond
+	id          int
+	taskMap     map[int]*node
+	isClosed    bool
+	taskTimeOut time.Duration
+	earlyWakeup chan struct{}
+	wg          sync.WaitGroup
+	tasks       chan node
 }
 
 type Scheduler interface {
@@ -41,15 +42,15 @@ func NewTaskQueue(numWorkers int, taskTimeout time.Duration) Scheduler {
 	heap.Init(minHeap)
 
 	tq := &taskQueue{
-		minHeap:       minHeap,
-		mu:            sync.Mutex{},
-		taskTimeOut:   taskTimeout,
-		canceledTasks: make(map[int]bool),
-		tasks:         make(chan node),
+		minHeap:     minHeap,
+		mu:          sync.Mutex{},
+		taskTimeOut: taskTimeout,
+		taskMap:     make(map[int]*node),
+		tasks:       make(chan node),
 	}
 
 	tq.notEmpty = sync.NewCond(&tq.mu)
-	tq.earlyWakeup = make(chan int, 1)
+	tq.earlyWakeup = make(chan struct{}, 1)
 
 	tq.wg = sync.WaitGroup{}
 
@@ -84,7 +85,9 @@ func (tq *taskQueue) Enqueue(t time.Time, task TaskFunc) int {
 		curMin = (*tq.minHeap)[0].scheduledAt
 	}
 
-	heap.Push(tq.minHeap, node{task: task, scheduledAt: t, id: tq.id})
+	newTask := &node{task: task, scheduledAt: t, id: tq.id}
+
+	heap.Push(tq.minHeap, newTask)
 	taskID := tq.id
 
 	tq.id = tq.id + 1
@@ -93,17 +96,17 @@ func (tq *taskQueue) Enqueue(t time.Time, task TaskFunc) int {
 
 	if !hasTask || t.Before(curMin) {
 		select {
-		case tq.earlyWakeup <- 1:
+		case tq.earlyWakeup <- struct{}{}:
 		default:
 		}
 	}
 
-	tq.canceledTasks[taskID] = false
+	tq.taskMap[taskID] = newTask
 
 	return taskID
 }
 
-func (tq *taskQueue) Dequeue() (task TaskFunc, isCanceled, queueClosed bool) {
+func (tq *taskQueue) Dequeue() {
 	defer tq.wg.Done()
 
 	timer := time.NewTimer(time.Hour)
@@ -119,12 +122,12 @@ func (tq *taskQueue) Dequeue() (task TaskFunc, isCanceled, queueClosed bool) {
 		if tq.minHeap.Len() == 0 && tq.isClosed {
 			close(tq.tasks)
 			tq.mu.Unlock()
-			return nil, false, true
+			return
 		}
 
 		next := (*tq.minHeap)[0]
 		wait := time.Until(next.scheduledAt)
-		tasks := make([]node, 0)
+		tasks := make([]*node, 0)
 
 		if wait > 0 {
 			if !timer.Stop() {
@@ -147,19 +150,19 @@ func (tq *taskQueue) Dequeue() (task TaskFunc, isCanceled, queueClosed bool) {
 
 		now := time.Now()
 		for tq.minHeap.Len() > 0 && !(*tq.minHeap)[0].scheduledAt.After(now) {
-			t := heap.Pop(tq.minHeap).(node)
+			t := heap.Pop(tq.minHeap).(*node)
 			fmt.Println("dequeued", t.id)
 
-			if !tq.canceledTasks[t.id] {
+			if _, ok := tq.taskMap[t.id]; ok {
 				tasks = append(tasks, t)
+				delete(tq.taskMap, t.id)
 			}
-			delete(tq.canceledTasks, t.id)
 		}
 
 		tq.mu.Unlock()
 
 		for _, t := range tasks {
-			tq.tasks <- t
+			tq.tasks <- *t
 		}
 	}
 }
@@ -188,16 +191,13 @@ func (tq *taskQueue) Cancel(taskID int) bool {
 	tq.mu.Lock()
 	defer tq.mu.Unlock()
 
-	val, ok := tq.canceledTasks[taskID]
+	val, ok := tq.taskMap[taskID]
 	if !ok {
 		return false
 	}
 
-	if val {
-		return false
-	}
-
-	tq.canceledTasks[taskID] = true
+	delete(tq.taskMap, taskID)
+	fmt.Println("deleted", heap.Remove(tq.minHeap, val.index))
 	return true
 }
 
@@ -212,22 +212,31 @@ func (tq *taskQueue) taskProcessor(wg *sync.WaitGroup) {
 	}
 }
 
-type MinHeap []node
+type MinHeap []*node
 
 func (h MinHeap) Len() int { return len(h) }
 func (h MinHeap) Less(i, j int) bool {
 	return h[i].scheduledAt.Before(h[j].scheduledAt)
 }
-func (h MinHeap) Swap(i, j int) { h[i], h[j] = h[j], h[i] }
+func (h MinHeap) Swap(i, j int) {
+	h[i], h[j] = h[j], h[i]
+	h[i].index = i
+	h[j].index = j
+}
 
 func (h *MinHeap) Push(x interface{}) {
-	*h = append(*h, x.(node))
+	n := len(*h)
+	item := x.(*node)
+	item.index = n
+	*h = append(*h, x.(*node))
 }
 
 func (h *MinHeap) Pop() interface{} {
 	old := *h
 	n := len(old)
-	x := old[n-1]
+	item := old[n-1]
+	old[n-1] = nil
+	item.index = -1
 	*h = old[0 : n-1]
-	return x
+	return item
 }

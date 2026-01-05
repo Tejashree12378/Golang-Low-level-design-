@@ -33,8 +33,8 @@ func scheduleSimulation(ctx context.Context, tq scheduler.Scheduler) {
 	fmt.Println("ScheduleAt ", id, time.Now().Add(10*time.Second).String())
 
 	for {
-		t := time.Duration(rand.Int31n(100)) * time.Millisecond
-		t2 := time.Duration(rand.Int31n(100)) * time.Millisecond
+		t := time.Duration(rand.Int31n(1000)) * time.Millisecond
+		t2 := time.Duration(rand.Int31n(1000)) * time.Millisecond
 		select {
 		case <-ctx.Done():
 			return
